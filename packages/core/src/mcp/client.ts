@@ -193,7 +193,11 @@ export const connect = Effect.fnUntraced(function* (
     )
 
   const initialize = Effect.fnUntraced(function* (transport: Transport) {
-    const runFork = Effect.runForkWith(yield* Effect.context())
+    // SDK callbacks run outside any fiber. They must run with this context so events they publish keep
+    // the server's Location; clients drop unlocated `form.created` events and elicitations then hang.
+    const context = yield* Effect.context()
+    const runFork = Effect.runForkWith(context)
+    const runPromise = Effect.runPromiseWith(context)
     const client = new Client(clientInfo, {
       capabilities: {
         ...(elicitation ? { elicitation: { form: {}, url: {} } } : {}),
@@ -217,10 +221,10 @@ export const connect = Effect.fnUntraced(function* (
     client.setRequestHandler("roots/list", () => ({ roots: [{ uri: pathToFileURL(directory).href }] }))
     if (elicitation) {
       client.setRequestHandler("elicitation/create", (request, ctx) =>
-        Effect.runPromise(elicitation.create({ server, params: request.params, signal: ctx.mcpReq.signal })),
+        runPromise(elicitation.create({ server, params: request.params, signal: ctx.mcpReq.signal })),
       )
       client.setNotificationHandler("notifications/elicitation/complete", (notification) =>
-        Effect.runPromise(elicitation.complete({ server, elicitationID: notification.params.elicitationId })),
+        runPromise(elicitation.complete({ server, elicitationID: notification.params.elicitationId })),
       )
     }
 
@@ -343,7 +347,8 @@ export const connect = Effect.fnUntraced(function* (
     const advertised = (capability: "tools" | "prompts" | "resources") =>
       Boolean(client.getServerCapabilities()?.[capability])
 
-    return {
+    // Annotated rather than `satisfies`: the inferred SDK types are cyclic, so declaration emit needs the named type.
+    const connection: Connection = {
       modern: client.getProtocolEra() === "modern",
       instructions: client.getInstructions()?.trim() || undefined,
       tools: () =>
@@ -407,7 +412,8 @@ export const connect = Effect.fnUntraced(function* (
       onResourcesChanged: (callback) => {
         changed.resources = callback
       },
-    } satisfies Connection
+    }
+    return connection
   }
 
   const error = Cause.squash(exit.cause)
